@@ -15,6 +15,7 @@
 - **Three-phase protection: PD Quality flickered to Battery Limited** (#559): the 5 W rounding of each battery's share no longer reads as a phase cap. Thanks to @dirkvanhoutert.
 - **Daily Operation timeline: "Updating state ... took 0.9 seconds" warnings** (#600, #409): routine plan and Charge Delay updates no longer bypass the publish throttle (now 60 s), so the snapshot is rebuilt far less often; Charge Delay status no longer loses its last keys. Thanks to @JITNL.
 - **Target Grid Power capped at the battery sum** (#597, #598): the import side now reaches the contracted power, so house load no longer starves a grid charge. Thanks to @stefantaanman-alt.
+- **Dynamic Pricing: guaranteed-floor grid charge overnight with price-based discharge control** (#594): hours where the price blocks discharge are no longer projected as battery drain, so the floor planner stops booking charges the battery never needs and the Daily Operation timeline no longer shows an overnight drain. Thanks to @iFab11.
 
 ### Changed
 
