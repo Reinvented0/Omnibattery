@@ -171,8 +171,15 @@ async def async_setup_entry(
         # Drivers without hardware energy counters (Zendure): synthesise the
         # charge/discharge energy totals by integrating power, and expose per-pack
         # telemetry sized to the live pack count (the first refresh already ran).
+        # Hoymiles reports native daily counters only, so just the lifetime
+        # totals are synthesised there.
         if not coordinator.capabilities.has_energy_counters:
             for definition in SYNTHETIC_ENERGY_SENSOR_DEFINITIONS:
+                if (
+                    definition["period"] == "daily"
+                    and coordinator.capabilities.has_daily_energy_counters
+                ):
+                    continue
                 entities.append(SyntheticEnergySensor(coordinator, definition))
         elif not coordinator.capabilities.has_daily_energy_counters:
             for definition in CUMULATIVE_DAILY_ENERGY_SENSOR_DEFINITIONS:
@@ -1271,7 +1278,7 @@ class NonResponsiveBatteriesSensor(SensorEntity):
 _DAILY_OPERATION_INTERVAL_COUNT = 96
 _DAILY_OPERATION_INTERVAL_MINUTES = 15
 _DAILY_OPERATION_EXTENDED_INTERVAL_COUNT = 48
-_DAILY_OPERATION_EVENT_THROTTLE_S = 15.0
+_DAILY_OPERATION_EVENT_THROTTLE_S = 60.0
 _TIMELINE_MISSING = object()
 
 
@@ -2300,6 +2307,9 @@ class DailyOperationTimelineSensor(SensorEntity):
         ):
             return self._attributes_cache
         attributes = _daily_operation_timeline_attributes(self._controller)
+        # Building the snapshot can advance the clock and bump the revision;
+        # cache under the post-build value or the next read rebuilds again.
+        revision = _timeline_read(manager, "revision", _TIMELINE_MISSING)
         if revision is not _TIMELINE_MISSING:
             self._attributes_cache_revision = revision
             self._attributes_cache = attributes

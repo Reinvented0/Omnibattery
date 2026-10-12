@@ -350,8 +350,13 @@ NORMAL_BALANCE_RECAL_RETRY_CELL_VOLTAGE = 3.57
 # e.g. a weak cell sagging under load) even though the reported SOC is still
 # above the configured min_soc. The battery then ACKs the discharge command but
 # delivers ~0W. Treat that as an expected BMS cutoff instead of a non-responsive
-# fault, so the battery stays in the PD pool.
+# fault: no repair, no wake. A refusal that lasts LOW_SOC_REFUSAL_CONFIRM_S takes
+# the battery out of the discharge pool until its SOC recovers (issue #545), so
+# the share goes to a battery that delivers instead of into one that stopped.
 BMS_DISCHARGE_CUTOFF_SOC = 20                  # %: below this, refused discharge = BMS cutoff, not a fault
+# Long enough to ride out a pack hand-off on a coupled-pack Venus A/D, short
+# against the hours a stopped battery was commanded before (#408, #545).
+LOW_SOC_REFUSAL_CONFIRM_S = 60
 
 # Bus-load reduction: the PD loop normally reads 4 registers back after every
 # power write (ACK verify + non-delivery detection). Those reads are the bulk of
@@ -661,6 +666,12 @@ GUARD_PENDING_TOLERANCE_W = 100
 # meter noise, so a cloud edge does not toggle the battery every cycle; release
 # has no band at all, because by then the house genuinely needs the battery.
 SURPLUS_GUARD_HYSTERESIS_W = 100
+# How long that surplus has to persist before the guard latches. The figure mixes
+# a meter reading with battery readings polled seconds apart: a battery just told
+# to ramp up still reports its old output while the meter already sees the new
+# one, and reads as a surplus for one sample. The effective window is
+# max(this, 2 * slowest actuator_latency_s), as for the zero-cross hold.
+SURPLUS_GUARD_MIN_HOLD_S = 5.0
 # How far the outlook has to move before the scarce/ample verdict flips. A
 # forecast wanders all day; without this the charge order would follow it.
 SCARCITY_HYSTERESIS_KWH = 2.0

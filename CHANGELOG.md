@@ -1,10 +1,35 @@
 # Changelog
 
-## [Unreleased]
+## [1.5.1] - Unreleased
 
 ### Added
 
-- **Predictive Charging Notifications switch** (#141): `switch.omnibattery_predictive_charging_notifications` (on by default) mutes the predictive-charging evaluation notifications at the source: daily and dynamic-pricing evaluations, slot starts, pre-slot and evening re-evaluations. Evaluations, schedules and diagnostics are unchanged; turning it off also dismisses an evaluation notification that is currently shown. Battery alarm, cell-balance and manual-mode notifications are not affected. Shown on the predictive-charging card of the dashboard.
+- **Predictive Charging Notifications switch** (#141): `switch.omnibattery_predictive_charging_notifications` (on by default) mutes the predictive-charging evaluation notifications at the source: daily and dynamic-pricing evaluations, slot starts, pre-slot and evening re-evaluations. Evaluations, schedules and diagnostics are unchanged; turning it off also dismisses an evaluation notification that is currently shown. Battery alarm, cell-balance and manual-mode notifications are not affected. Shown on the predictive-charging card of the dashboard. Thanks to @Reinvented0.
+
+### Fixed
+
+- **Marstek Venus D: no discharge after a Modbus reconnect** (#548): when the battery reports its max charge/discharge power as 0 W, the configured limit is now written back automatically (at most once a minute) instead of waiting for a manual rewrite. Thanks to @mxmrlt.
+- **Hoymiles: Battery Cycle Count stuck at 0** (#557): the battery only reports daily energy, so lifetime charge/discharge totals are now integrated from power. Thanks to @adonix31.
+- **Zendure SolarFlow 800 / Plus / Pro: PV not counted in System Solar Power or Daily Solar Production** (#556). Lifetime Efficiency keeps using the charge/discharge totals. Thanks to @adonix31.
+- **Time Slot: a cleared second or third charging window came back** (#547): emptying a window's start and end in the options now removes it. Thanks to @schauveau.
+- **Panel: daily timeline failed to render without Charge Delay data** (#549). Thanks to @thijskaspers.
+- **Anker: PD oscillated after load steps** (#522): the control loop no longer re-anchors to (or kicks off) Anker's lagging power reading. Thanks to @wauswaus.
+- **Multi-battery: a battery flipped between Discharge and idle at low load**: the surplus guard now needs a surplus to last a few seconds before blocking discharge, so a battery reading that lags its last command (or another battery's oscillation) no longer cuts it to 0.
+- **Grid charging in pulses with every battery blocked from discharging** (min SOC or Allow Discharge off): the PD's derivative no longer winds up while no battery can discharge, which used to push it into 400-1300 W charge pulses from the grid while the house was importing.
+- **Three-phase protection: PD Quality flickered to Battery Limited** (#559): the 5 W rounding of each battery's share no longer reads as a phase cap. Thanks to @dirkvanhoutert.
+- **Daily Operation timeline: "Updating state ... took 0.9 seconds" warnings** (#600, #409): routine plan and Charge Delay updates no longer bypass the publish throttle (now 60 s), so the snapshot is rebuilt far less often; Charge Delay status no longer loses its last keys. Thanks to @JITNL.
+- **Target Grid Power capped at the battery sum** (#597, #598): the import side now reaches the contracted power, so house load no longer starves a grid charge. Thanks to @stefantaanman-alt.
+- **Dynamic Pricing: guaranteed-floor grid charge overnight with price-based discharge control** (#594): hours where the price blocks discharge are no longer projected as battery drain, so the floor planner stops booking charges the battery never needs and the Daily Operation timeline no longer shows an overnight drain. Thanks to @iFab11.
+- **Daily Operation timeline: no solar forecast for tomorrow** (#574): the hourly curve now comes from the forecast integration's Energy dashboard data (Solcast, Forecast.Solar, ...) behind the configured sensor, so tomorrow shows up and overnight planning can count it. No new sensor needed. Thanks to @ChuckleDucks.
+- **High Price Sale: `no_refill_price` with several solar arrays** (#558): tomorrow's forecast curve now sums every forecast set in the Energy dashboard (e.g. one Forecast.Solar entry per array), so the refill window is found even when the configured sensor is a template or covers one array. Thanks to @JoHuTi.
+- **Dynamic Pricing with PVPC: tomorrow's prices ignored** (#568): the `price_next_day_*` attributes are now read, so an evening re-evaluation can book cheap overnight hours and the publication re-evaluation fires. Thanks to @falberdi.
+- **Zendure: wrong Internal Temperature and pack temperatures** (#566): `hyperTmp` and `maxTemp` are deci-Kelvin, now converted as `(raw - 2731) / 10`. Thanks to @EricRx.
+- **Venus A/D with several packs: discharge stopped when the first pack reached Min SOC** (#545): the floor follows the total SOC again, which is where the BMS itself stops. A battery that stops delivering below 20 % SOC for a minute is now left out of discharge until it recovers 2 %, instead of being commanded for hours. Thanks to @FrankieV040, @Slashir and @sphings79.
+
+### Changed
+
+- **Faster startup with several batteries** (#560): batteries on different hosts now connect and configure in parallel instead of one after another; batteries sharing a gateway still go in turn. Thanks to @sphings79.
+- **Docs: driver guide lists every file a new battery driver touches**, plus the brand branches in shared code that should become capabilities.
 
 ## [1.5.0] - 2026-10-04
 

@@ -543,7 +543,7 @@ def test_solar_half_hours_map_to_hourly_and_quarter_hour_slots(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_missing_energy_platform_fails_closed(monkeypatch):
-    import custom_components.omnibattery.control.high_price_discharge as runtime
+    import custom_components.omnibattery.solar_forecast as runtime
 
     manager, controller, _ = _manager(solar_forecast_sensor="sensor.forecast")
     registry = SimpleNamespace(async_get=lambda sensor: SimpleNamespace(config_entry_id="abc"))
@@ -612,7 +612,7 @@ def test_fill_window_starts_at_an_unaligned_sunrise(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_energy_platform_exception_keeps_fill_empty(monkeypatch):
-    import custom_components.omnibattery.control.high_price_discharge as runtime
+    import custom_components.omnibattery.solar_forecast as runtime
 
     manager, _, _ = _manager(solar_forecast_sensor="sensor.forecast")
     monkeypatch.setattr(runtime.er, "async_get", lambda hass: SimpleNamespace(

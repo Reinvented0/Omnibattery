@@ -2835,6 +2835,39 @@ class PricingManager:
                     else item
                     for item in intervals
                 ]
+            # Price-based discharge control idles the battery whenever the
+            # slot price is at or below its threshold (#594), so those
+            # intervals drain nothing either. Prices come from the full
+            # cached feed, not ``slots``: callers pass only charge candidates
+            # (the dashboard its selected slots, the diagnostics refresh none).
+            price_block = self._dp_price_discharge_threshold()
+            if price_block is not None:
+                local_end = (
+                    horizon_end.replace(tzinfo=None)
+                    if horizon_end.tzinfo is None
+                    else horizon_end.astimezone(now.tzinfo).replace(tzinfo=None)
+                )
+
+                def wall(value: datetime) -> datetime:
+                    # Price slots are naive local wall time.
+                    if value.tzinfo is None:
+                        return value
+                    return value.astimezone(now.tzinfo).replace(tzinfo=None)
+
+                blocked = [
+                    slot
+                    for slot in self.get_future_price_slots(horizon_end=local_end)
+                    if slot.price <= price_block
+                ]
+                intervals = [
+                    EnergyInterval(item.start, item.end, 0.0, item.solar_kwh)
+                    if any(
+                        wall(slot.start) <= wall(item.start) < wall(slot.end)
+                        for slot in blocked
+                    )
+                    else item
+                    for item in intervals
+                ]
 
             eligible = [
                 c for c in self._controller.coordinators
@@ -6245,6 +6278,24 @@ class PricingManager:
     # Price-based discharge block
     # =========================================================================
 
+    def _dp_price_discharge_threshold(self) -> float | None:
+        """Return the DP discharge-block threshold, or None when inactive."""
+        controller = self._controller
+        if (
+            getattr(controller, "predictive_charging_mode", None)
+            != PREDICTIVE_MODE_DYNAMIC_PRICING
+            or not getattr(controller, "dp_price_discharge_control", False)
+        ):
+            return None
+        for threshold in (
+            getattr(controller, "discharge_price_threshold", None),
+            getattr(controller, "max_price_threshold", None),
+            getattr(controller, "_dp_daily_avg_price", None),
+        ):
+            if threshold is not None:
+                return threshold
+        return None
+
     def apply_price_discharge_block(self) -> None:
         """Set ``_price_based_discharge_blocked`` from current price vs threshold.
 
@@ -6291,11 +6342,7 @@ class PricingManager:
             # single-threshold installs are unchanged. #408
             # ponytail: a floor below the ceiling just collapses the band toward
             # current behavior — benign, not validated.
-            threshold = self._controller.discharge_price_threshold
-            if threshold is None:
-                threshold = self._controller.max_price_threshold
-            if threshold is None:
-                threshold = self._controller._dp_daily_avg_price
+            threshold = self._dp_price_discharge_threshold()
         elif self._controller.average_price_sensor:
             avg_state = self._hass.states.get(self._controller.average_price_sensor)
             if avg_state is not None:

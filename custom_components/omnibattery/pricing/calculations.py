@@ -182,28 +182,32 @@ def parse_nordpool_service_prices(response: dict, area: str | None = None) -> li
 def parse_pvpc_prices(attrs: dict) -> list:
     """Parse PVPC (ESIOS REE, Spain) price attributes.
 
-    Expected format: "price_00h", "price_01h", ..., "price_23h" (float, €/kWh).
-    PVPC publishes next-day prices around 20:00; at 00:05 the attributes
-    reflect the current day's prices (already in effect).
-    Returns list[PriceSlot] for today in local time.
+    Expected format: "price_00h", "price_01h", ..., "price_23h" (float, €/kWh)
+    for today, plus "price_next_day_00h" ... "price_next_day_23h" for tomorrow
+    once PVPC publishes them (around 20:00).
+    Returns list[PriceSlot] in local time.
     """
     from datetime import date as _date, time as _time
 
     slots = []
-    target_date = _date.today()
-    for hour in range(24):
-        attr_name = f"price_{hour:02d}h"
-        price_val = attrs.get(attr_name)
-        if price_val is None:
-            continue
-        try:
-            price = float(price_val)
-        except (ValueError, TypeError):
-            _LOGGER.debug("Dynamic pricing: failed to parse PVPC attribute %s=%s", attr_name, price_val)
-            continue
-        start = datetime.combine(target_date, _time(hour=hour, minute=0))
-        end = start + timedelta(hours=1)
-        slots.append(PriceSlot(start=start, end=end, price=price))
+    today = _date.today()
+    for prefix, target_date in (
+        ("price_", today),
+        ("price_next_day_", today + timedelta(days=1)),
+    ):
+        for hour in range(24):
+            attr_name = f"{prefix}{hour:02d}h"
+            price_val = attrs.get(attr_name)
+            if price_val is None:
+                continue
+            try:
+                price = float(price_val)
+            except (ValueError, TypeError):
+                _LOGGER.debug("Dynamic pricing: failed to parse PVPC attribute %s=%s", attr_name, price_val)
+                continue
+            start = datetime.combine(target_date, _time(hour=hour, minute=0))
+            end = start + timedelta(hours=1)
+            slots.append(PriceSlot(start=start, end=end, price=price))
     return slots
 
 
