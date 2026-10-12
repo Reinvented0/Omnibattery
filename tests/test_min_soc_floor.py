@@ -732,8 +732,9 @@ def _price_blocked_floor_decision(night_price, **thresholds):
     manager._controller._dp_daily_avg_price = None
     for name, value in thresholds.items():
         setattr(manager._controller, name, value)
-    midnight = datetime(2026, 9, 11, 0, 0, tzinfo=_FLOOR_TZ)
-    slots = [
+    # The live feed is naive local wall time; the planner clock is aware.
+    midnight = datetime(2026, 9, 11, 0, 0)
+    prices = [
         PriceSlot(
             midnight + timedelta(hours=hour),
             midnight + timedelta(hours=hour + 1),
@@ -741,6 +742,7 @@ def _price_blocked_floor_decision(night_price, **thresholds):
         )
         for hour in range(24)
     ]
+    manager.get_future_price_slots = lambda horizon_end=None: prices
     decision = {
         "should_charge": False,
         "avg_consumption_kwh": _FLOOR_BASE_KW * 24,
@@ -750,7 +752,9 @@ def _price_blocked_floor_decision(night_price, **thresholds):
     }
     manager._build_chronological_plan(
         now=datetime(2026, 9, 11, 1, 0, tzinfo=_FLOOR_TZ),
-        slots=slots,
+        # No charge candidates, as in the diagnostics refresh and the
+        # dashboard outside its selected slots: the block must not need them.
+        slots=[],
         decision_data=decision,
         price_ceiling=None,
     )

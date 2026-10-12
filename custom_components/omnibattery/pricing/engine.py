@@ -2837,15 +2837,33 @@ class PricingManager:
                 ]
             # Price-based discharge control idles the battery whenever the
             # slot price is at or below its threshold (#594), so those
-            # intervals drain nothing either.
+            # intervals drain nothing either. Prices come from the full
+            # cached feed, not ``slots``: callers pass only charge candidates
+            # (the dashboard its selected slots, the diagnostics refresh none).
             price_block = self._dp_price_discharge_threshold()
-            if price_block is not None and slots:
+            if price_block is not None:
+                local_end = (
+                    horizon_end.replace(tzinfo=None)
+                    if horizon_end.tzinfo is None
+                    else horizon_end.astimezone(now.tzinfo).replace(tzinfo=None)
+                )
+
+                def wall(value: datetime) -> datetime:
+                    # Price slots are naive local wall time.
+                    if value.tzinfo is None:
+                        return value
+                    return value.astimezone(now.tzinfo).replace(tzinfo=None)
+
+                blocked = [
+                    slot
+                    for slot in self.get_future_price_slots(horizon_end=local_end)
+                    if slot.price <= price_block
+                ]
                 intervals = [
                     EnergyInterval(item.start, item.end, 0.0, item.solar_kwh)
                     if any(
-                        slot.start <= item.start < slot.end
-                        and slot.price <= price_block
-                        for slot in slots
+                        wall(slot.start) <= wall(item.start) < wall(slot.end)
+                        for slot in blocked
                     )
                     else item
                     for item in intervals
