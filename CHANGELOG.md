@@ -20,6 +20,7 @@
 - **High Price Sale: `no_refill_price` with several solar arrays** (#558): tomorrow's forecast curve now sums every forecast set in the Energy dashboard (e.g. one Forecast.Solar entry per array), so the refill window is found even when the configured sensor is a template or covers one array. Thanks to @JoHuTi.
 - **Dynamic Pricing with PVPC: tomorrow's prices ignored** (#568): the `price_next_day_*` attributes are now read, so an evening re-evaluation can book cheap overnight hours and the publication re-evaluation fires. Thanks to @falberdi.
 - **Zendure: wrong Internal Temperature and pack temperatures** (#566): `hyperTmp` and `maxTemp` are deci-Kelvin, now converted as `(raw - 2731) / 10`. Thanks to @EricRx.
+- **Venus A/D with several packs: discharge stopped when the first pack reached Min SOC** (#545): the floor follows the total SOC again, which is where the BMS itself stops. A battery that stops delivering below 20 % SOC for a minute is now left out of discharge until it recovers 2 %, instead of being commanded for hours. Thanks to @FrankieV040, @Slashir and @sphings79.
 
 ### Changed
 
