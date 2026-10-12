@@ -344,8 +344,13 @@ NORMAL_BALANCE_RECAL_RETRY_CELL_VOLTAGE = 3.57
 # e.g. a weak cell sagging under load) even though the reported SOC is still
 # above the configured min_soc. The battery then ACKs the discharge command but
 # delivers ~0W. Treat that as an expected BMS cutoff instead of a non-responsive
-# fault, so the battery stays in the PD pool.
+# fault: no repair, no wake. A refusal that lasts LOW_SOC_REFUSAL_CONFIRM_S takes
+# the battery out of the discharge pool until its SOC recovers (issue #545), so
+# the share goes to a battery that delivers instead of into one that stopped.
 BMS_DISCHARGE_CUTOFF_SOC = 20                  # %: below this, refused discharge = BMS cutoff, not a fault
+# Long enough to ride out a pack hand-off on a coupled-pack Venus A/D, short
+# against the hours a stopped battery was commanded before (#408, #545).
+LOW_SOC_REFUSAL_CONFIRM_S = 60
 
 # Bus-load reduction: the PD loop normally reads 4 registers back after every
 # power write (ACK verify + non-delivery detection). Those reads are the bulk of

@@ -212,6 +212,7 @@ from .const import (
     INVERTER_STATE_AC_BYPASS,
     NORMAL_BALANCE_RECAL_RETRY_CELL_VOLTAGE,
     BMS_DISCHARGE_CUTOFF_SOC,
+    LOW_SOC_REFUSAL_CONFIRM_S,
     PD_READBACK_EVERY_N_WRITES,
     ACK_INEXACT_STREAK_WARN,
     FEEDFORWARD_STEP_FLOOR_W,
@@ -267,7 +268,7 @@ from .tracking.daily_timeline import (
     GRID_CHARGE_NOT_NEEDED,
     GRID_CHARGE_SCHEDULED,
 )
-from .control.pack_soc import control_vmax, soc_vs_ceiling, soc_vs_floor
+from .control.pack_soc import control_vmax, soc_vs_ceiling
 from .control.weekly_full_charge import WeeklyFullChargeManager
 from .control.max_soc_charge import MaxSocChargeManager
 from .control.temperature_limit import TemperatureChargeLimitManager
@@ -3915,12 +3916,9 @@ class ChargeDischargeController:
 
             current_soc = coordinator.data.get("battery_soc", 0)
             effective_min_soc, min_soc_source = self._effective_discharge_min_soc(coordinator)
-            # A coupled-pack battery is empty when its *first* pack reaches the
-            # floor: a Venus D stops the whole battery there and strands the
-            # charge in the others (issue #350). Falls back to the aggregate on
-            # every battery that publishes no per-pack telemetry.
-            floor_soc = soc_vs_floor(coordinator, current_soc)
-            if floor_soc <= effective_min_soc:
+            # The aggregate, also on a coupled-pack battery: its BMS rotates
+            # packs and stops on the total, not on the first pack (issue #545).
+            if current_soc <= effective_min_soc:
                 self.set_discharge_block(
                     "min_soc",
                     "min_soc",
@@ -3930,7 +3928,6 @@ class ChargeDischargeController:
                         "min_soc": coordinator.min_soc,
                         "effective_min_soc": effective_min_soc,
                         "source": min_soc_source,
-                        **({"max_pack_soc": floor_soc} if floor_soc != current_soc else {}),
                     },
                     coordinator=coordinator,
                 )
@@ -3986,7 +3983,7 @@ class ChargeDischargeController:
                 self.remove_discharge_block("price_reserve", coordinator=coordinator)
                 continue
             reserved_floor = min(100.0, floor + reserve_pct)
-            if soc_vs_floor(coordinator, soc) <= reserved_floor:
+            if soc <= reserved_floor:
                 self.set_discharge_block(
                     "price_reserve",
                     "price_reserve",
@@ -4427,22 +4424,33 @@ class ChargeDischargeController:
                 # the battery for a sliver of discharge — relay ping-pong and
                 # micro-cycles at the worst SOC region. Latch the exclusion at
                 # min_soc; release only after a real recovery margin.
-                # Judged on the first pack to empty for a coupled-pack
-                # battery: the aggregate still reads above the floor after the
-                # device has already stopped (issue #350). Identical to
-                # current_soc without pack telemetry.
-                floor_soc = soc_vs_floor(coordinator, current_soc)
-                if floor_soc <= coordinator.min_soc:
+                # A battery that stopped delivering above min_soc (see
+                # _check_non_delivery) is held out the same way, from the SOC
+                # it stopped at.
+                refused_soc = getattr(coordinator, "_discharge_refused_soc", None)
+                if (
+                    refused_soc is not None
+                    and current_soc >= refused_soc + DISCHARGE_MIN_SOC_REENTRY_MARGIN
+                ):
+                    coordinator._discharge_refused_soc = refused_soc = None
+                if current_soc <= coordinator.min_soc:
                     coordinator._discharge_min_soc_latched = True
-                elif floor_soc >= coordinator.min_soc + DISCHARGE_MIN_SOC_REENTRY_MARGIN:
+                elif current_soc >= coordinator.min_soc + DISCHARGE_MIN_SOC_REENTRY_MARGIN:
                     coordinator._discharge_min_soc_latched = False
-                if floor_soc > coordinator.min_soc:
+                if current_soc > coordinator.min_soc:
                     if getattr(coordinator, "_discharge_min_soc_latched", False):
                         _LOGGER.debug(
                             "%s: Skipping discharge - min-SOC re-entry hysteresis "
                             "(SOC %.1f%%, releases at %.1f%%)",
                             coordinator.name, current_soc,
                             coordinator.min_soc + DISCHARGE_MIN_SOC_REENTRY_MARGIN,
+                        )
+                    elif refused_soc is not None:
+                        _LOGGER.debug(
+                            "%s: Skipping discharge - stopped delivering at SOC "
+                            "%.1f%% (releases at %.1f%%)",
+                            coordinator.name, refused_soc,
+                            refused_soc + DISCHARGE_MIN_SOC_REENTRY_MARGIN,
                         )
                     else:
                         available_batteries.append(coordinator)
@@ -6875,6 +6883,7 @@ class ChargeDischargeController:
         ):
             self._discharge_engage_started[coordinator] = dt_util.utcnow()
             self._non_responsive.clear(coordinator, delivering=False)
+            coordinator._low_soc_refusal_started = None
         # Mirror stamp for the opposite transition: a flip from a move into idle
         # starts the ramp-down grace for the idle-runaway judgment below. A
         # battery idle from the start (no prior commanded move) gets no grace —
@@ -7217,6 +7226,7 @@ class ChargeDischargeController:
         if delivered_power >= 0.10 * commanded_power:
             self._high_soc_taper_started.pop(coordinator, None)
             self._non_responsive.clear(coordinator)
+            coordinator._low_soc_refusal_started = None
             return
         engage_times = (
             self._charge_engage_started
@@ -7309,6 +7319,28 @@ class ChargeDischargeController:
             )
             # Comms and battery are fine, just protecting itself.
             self._non_responsive.clear(coordinator)
+            # Not a fault, but not a battery to keep asking either: a device
+            # that stops above min_soc (its own cutoff set higher in the app, a
+            # BMS stopping early) was otherwise commanded for hours while the
+            # house imported (#408, #545). Once the refusal outlasts a pack
+            # hand-off, treat the battery as empty at this SOC.
+            # A clock older than twice the window was not kept running by
+            # consecutive refusals (sub-100 W discharge is never judged, so a
+            # delivery in between may not have reset it): start over.
+            now = dt_util.utcnow()
+            started = getattr(coordinator, "_low_soc_refusal_started", None)
+            elapsed = (now - started).total_seconds() if started else None
+            if elapsed is None or elapsed > 2 * LOW_SOC_REFUSAL_CONFIRM_S:
+                coordinator._low_soc_refusal_started = now
+            elif elapsed >= LOW_SOC_REFUSAL_CONFIRM_S:
+                coordinator._low_soc_refusal_started = None
+                coordinator._discharge_refused_soc = current_soc
+                _LOGGER.info(
+                    "[%s] Battery stopped delivering at SOC %.1f%% — out of the "
+                    "discharge pool until it recovers to %.1f%%",
+                    coordinator.name, current_soc,
+                    current_soc + DISCHARGE_MIN_SOC_REENTRY_MARGIN,
+                )
             return
         # ACK'd but no power: separate a battery sitting in standby
         # (likely dropped RS485 control) from one that is awake but

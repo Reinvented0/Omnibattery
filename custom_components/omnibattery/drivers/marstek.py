@@ -670,11 +670,9 @@ class MarstekModbusDriver(BatteryDriver):
         The zeros a written-off slot produced have to be purged, not merely
         stopped. They were stored on every probe cycle, and the coordinator keeps
         what it was last given: dropping the slot from the read groups leaves the
-        last 0 behind for good. That is harmless to a verdict taken on the
-        fullest pack and fatal to one taken on the first, which is what the floor
-        now is — a battery whose real packs sit at 80 % would read 0 and be
-        excluded from discharge permanently, since the min-SOC latch releases
-        only on a recovery the stale key can never show. So the slot's key is
+        last 0 behind for good. That is fatal to a verdict taken on the least
+        full pack, which is what the charge ceiling is — a battery whose real
+        packs sit at 100 % would read 0 and never be judged full. So the slot's key is
         overwritten with None on the cycle it is written off; the coordinator
         stores None as given and the control layer filters it out.
         """
