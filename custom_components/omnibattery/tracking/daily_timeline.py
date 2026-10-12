@@ -1099,7 +1099,9 @@ class DailyOperationTimelineManager:
         if setpoint is not None:
             self._setpoint_info = self._safe_metadata(setpoint)
         if delay is not None:
-            self._delay_info = self._safe_metadata(delay)
+            # The charge-delay status carries ~23 keys; the default 16 dropped
+            # the tail (enabled/unlocked/weekly_full_charge_bypasses_delay).
+            self._delay_info = self._safe_metadata(delay, max_items=32)
         if freshness is not None:
             incoming_freshness = self._safe_metadata(freshness)
             # ``updated_at`` is useful in the DTO, but the control loop calls
@@ -1146,8 +1148,11 @@ class DailyOperationTimelineManager:
             stale_changed = old[6] != self._stale or old[7] != self._stale_reason
             restoration_changed = old[3] != self._restore_status
             kind = "stale" if stale_changed else "recovery" if restoration_changed else "plan"
-            self._mark_public_change(kind, immediate=True)
-            self.request_save(immediate=True)
+            # Charge-delay figures (energy needed, remaining time) change on
+            # every evaluation; only stale/recovery bypass the publish throttle.
+            structural = kind != "plan"
+            self._mark_public_change(kind, immediate=structural)
+            self.request_save(immediate=structural)
             self._notify_listeners()
         return changed
 
@@ -2477,11 +2482,14 @@ class DailyOperationTimelineManager:
             self._dirty = True
             mode_changed = old_mode != self._mode
             stale_changed = old_stale != self._stale or old_stale_reason != self._stale_reason
+            # The projection signature tracks live SOC, so it changes about
+            # once a minute; only structural changes bypass the throttle.
+            structural = mode_changed or stale_changed or day_changed
             self._mark_public_change(
                 "mode" if mode_changed else "stale" if stale_changed else "plan",
-                immediate=True,
+                immediate=structural,
             )
-            self.request_save(immediate=True)
+            self.request_save(immediate=structural)
             self._notify_listeners()
         return changed
 
@@ -2789,7 +2797,7 @@ class DailyOperationTimelineManager:
                 for key in self._sources:
                     self._sources[key] = _safe_text(sources.get(key), max_length=128)
             self._setpoint_info = self._safe_metadata(metadata.get("setpoint"))
-            self._delay_info = self._safe_metadata(metadata.get("delay"))
+            self._delay_info = self._safe_metadata(metadata.get("delay"), max_items=32)
             self._freshness_info = self._safe_metadata(metadata.get("freshness"))
         if projection_configuration_changed:
             # A config update can legitimately reload this integration during
