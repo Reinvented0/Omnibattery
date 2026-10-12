@@ -17,6 +17,7 @@
 - **Target Grid Power capped at the battery sum** (#597, #598): the import side now reaches the contracted power, so house load no longer starves a grid charge. Thanks to @stefantaanman-alt.
 - **Dynamic Pricing: guaranteed-floor grid charge overnight with price-based discharge control** (#594): hours where the price blocks discharge are no longer projected as battery drain, so the floor planner stops booking charges the battery never needs and the Daily Operation timeline no longer shows an overnight drain. Thanks to @iFab11.
 - **Daily Operation timeline: no solar forecast for tomorrow** (#574): the hourly curve now comes from the forecast integration's Energy dashboard data (Solcast, Forecast.Solar, ...) behind the configured sensor, so tomorrow shows up and overnight planning can count it. No new sensor needed. Thanks to @ChuckleDucks.
+- **Dynamic Pricing with PVPC: tomorrow's prices ignored** (#568): the `price_next_day_*` attributes are now read, so an evening re-evaluation can book cheap overnight hours and the publication re-evaluation fires. Thanks to @falberdi.
 
 ### Changed
 
