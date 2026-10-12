@@ -69,7 +69,7 @@ _REPORT = {
         "gridInputPower": 150,
         "packInputPower": 0,
         "outputPackPower": 50,
-        "hyperTmp": 3035,         # centi-°C → 30.35 °C
+        "hyperTmp": 3035,         # deci-Kelvin → 30.4 °C
         "faultLevel": 0,
         "acStatus": 1,
         "remainOutTime": 120,
@@ -397,19 +397,18 @@ async def test_read_telemetry_maps_properties_to_keys():
 
 
 async def test_read_telemetry_returns_raw_centi_units_for_coordinator_scaling():
-    # Driver returns raw device values under the reused Marstek keys; the
-    # coordinator applies the ×0.01 scale from the entity definition (same path
-    # as Marstek register sensors). Scaling in the driver would double it.
+    # BatVolt stays raw (coordinator applies ×0.01); hyperTmp is deci-Kelvin,
+    # converted in the driver because the offset can't ride the scale (#566).
     snap = await _driver(session=_session(get_data=_REPORT)).read_telemetry()
-    assert snap["internal_temperature"] == 3035  # hyperTmp raw (→30.35 °C scaled)
+    assert snap["internal_temperature"] == 30.4  # (3035 - 2731) / 10
     assert snap["battery_voltage"] == 5010        # BatVolt raw (→50.10 V scaled)
 
 
 def test_centi_scaled_keys_carry_scale_for_coordinator():
     by_key = {d["key"]: d for d in _driver().sensor_definitions}
-    for k in ("internal_temperature", "battery_voltage",
-              "max_cell_voltage", "min_cell_voltage"):
+    for k in ("battery_voltage", "max_cell_voltage", "min_cell_voltage"):
         assert by_key[k]["scale"] == 0.01
+    assert by_key["internal_temperature"]["scale"] == 1  # pre-converted (#566)
 
 
 async def test_read_telemetry_maps_grid_off_mode():
@@ -559,7 +558,7 @@ async def test_read_telemetry_emits_per_pack_keys():
     assert snap["pack1_voltage"] == 50.05          # totalVol / 100
     assert snap["pack1_max_cell_voltage"] == 3.34  # maxVol / 100
     assert snap["pack1_min_cell_voltage"] == 3.33
-    assert snap["pack1_temperature"] == 30.11      # maxTemp / 100
+    assert snap["pack1_temperature"] == 28.0       # (maxTemp - 2731) / 10
     assert snap["pack1_power"] == 120
     assert snap["pack1_sn"] == "PK1"
     assert snap["pack1_model"] == 500              # packType
