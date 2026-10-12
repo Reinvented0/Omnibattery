@@ -6,11 +6,16 @@ one place prevents callers from accidentally subtracting production twice.
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from time import monotonic
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
+
+from homeassistant.helpers import entity_registry as er
+from homeassistant.loader import async_get_integration
 
 from .const import (
     CONF_SOLAR_FORECAST_REMAINING_SENSOR,
@@ -19,8 +24,11 @@ from .const import (
 )
 
 
+_LOGGER = logging.getLogger(__name__)
+
 ForecastSource = Literal["remaining", "today"]
 _FORECAST_EPSILON_KWH = 1e-9
+ENERGY_FORECAST_REFRESH_S = 1800.0
 
 
 @dataclass(frozen=True)
@@ -280,6 +288,82 @@ def _extract_forecast_periods(state: Any) -> tuple[SolarForecastPeriod, ...]:
     return tuple(parsed)
 
 
+async def async_fetch_energy_solar_forecast(hass: Any, sensor: str | None) -> dict:
+    """Return the Energy dashboard ``wh_hours`` of the integration behind ``sensor``.
+
+    Every integration HA offers as an Energy dashboard forecast (Solcast,
+    Forecast.Solar, Open-Meteo...) implements ``energy.async_get_solar_forecast``,
+    so the configured sensor alone identifies a multi-day curve. Anything else
+    yields ``{}``.
+    """
+    try:
+        entry = er.async_get(hass).async_get(sensor) if sensor else None
+        config_entry = (hass.config_entries.async_get_entry(entry.config_entry_id)
+                        if entry is not None and entry.config_entry_id else None)
+        if config_entry is None:
+            return {}
+        integration = await async_get_integration(hass, config_entry.domain)
+        platform = await integration.async_get_platform("energy")
+        data = await platform.async_get_solar_forecast(hass, config_entry.entry_id)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Energy dashboard solar forecast unavailable: %s", err)
+        return {}
+    wh_hours = data.get("wh_hours") if isinstance(data, dict) else None
+    return wh_hours if isinstance(wh_hours, dict) else {}
+
+
+def periods_from_wh_hours(wh_hours: dict) -> tuple[SolarForecastPeriod, ...]:
+    """Turn Energy dashboard ``wh_hours`` into dated periods.
+
+    Keys are period starts; providers omit zero periods (Solcast), so the
+    period length is the smallest gap between keys.
+    """
+    entries = []
+    for timestamp, wh in wh_hours.items():
+        start = _parse_period_timestamp(timestamp)
+        try:
+            energy = float(wh) / 1000.0
+        except (TypeError, ValueError):
+            continue
+        if start is not None and math.isfinite(energy) and energy >= 0.0:
+            entries.append((start, energy))
+    entries.sort(key=lambda entry: entry[0].timestamp())
+    step = min(
+        (b[0] - a[0] for a, b in zip(entries, entries[1:]) if b[0] > a[0]),
+        default=timedelta(hours=1),
+    )
+    return tuple(SolarForecastPeriod(start, start + step, energy) for start, energy in entries)
+
+
+def _energy_dashboard_periods(
+    hass: Any,
+    controller: Any,
+    sensor: str,
+) -> tuple[SolarForecastPeriod, ...]:
+    """Return cached Energy dashboard periods for ``sensor``, refreshing in background.
+
+    The read path is synchronous, so a stale cache schedules a fetch and the
+    current (possibly empty) cache is returned meanwhile.
+    """
+    cache = getattr(controller, "_energy_solar_forecast", None)
+    cached = cache is not None and cache[0] == sensor
+    create_task = getattr(hass, "async_create_task", None)
+    task = getattr(controller, "_energy_solar_fetch_task", None)
+    if (
+        callable(create_task)
+        and (not cached or monotonic() - cache[1] >= ENERGY_FORECAST_REFRESH_S)
+        and (task is None or task.done())
+    ):
+        async def _refresh() -> None:
+            wh_hours = await async_fetch_energy_solar_forecast(hass, sensor)
+            controller._energy_solar_forecast = (
+                sensor, monotonic(), periods_from_wh_hours(wh_hours)
+            )
+
+        controller._energy_solar_fetch_task = create_task(_refresh())
+    return cache[2] if cached else ()
+
+
 def read_solar_forecast_kwh(
     hass: Any,
     controller: Any,
@@ -309,7 +393,10 @@ def read_solar_forecast_kwh(
                 value,
                 source,
                 sensor,
-                periods=_extract_forecast_periods(state),
+                periods=(
+                    _extract_forecast_periods(state)
+                    or _energy_dashboard_periods(hass, controller, sensor)
+                ),
                 conversion="none",
             )
             # Most control callers retain the source for diagnostics. Dashboard
