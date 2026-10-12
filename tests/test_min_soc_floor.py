@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from custom_components.omnibattery import ChargeDischargeController
+from custom_components.omnibattery.const import PREDICTIVE_MODE_DYNAMIC_PRICING
+from custom_components.omnibattery.pricing import PriceSlot
 from custom_components.omnibattery.pricing.engine import PricingManager
 from custom_components.omnibattery.tracking.consumption_profile import ConsumptionForecast
 
@@ -717,6 +719,60 @@ def test_no_discharge_window_does_not_project_an_overnight_floor_charge():
 
 def test_per_battery_no_discharge_window_is_not_projected_fleet_wide():
     assert _no_discharge_floor_decision("other_battery")["floor_active"] is True
+
+
+# --- price-based discharge control holding the battery overnight (#594) --------
+
+
+def _price_blocked_floor_decision(night_price, **thresholds):
+    manager = _floor_manager(45.0)
+    manager._controller.predictive_charging_mode = PREDICTIVE_MODE_DYNAMIC_PRICING
+    manager._controller.dp_price_discharge_control = True
+    manager._controller.discharge_price_threshold = None
+    manager._controller._dp_daily_avg_price = None
+    for name, value in thresholds.items():
+        setattr(manager._controller, name, value)
+    midnight = datetime(2026, 9, 11, 0, 0, tzinfo=_FLOOR_TZ)
+    slots = [
+        PriceSlot(
+            midnight + timedelta(hours=hour),
+            midnight + timedelta(hours=hour + 1),
+            night_price if hour < 7 else 0.30,
+        )
+        for hour in range(24)
+    ]
+    decision = {
+        "should_charge": False,
+        "avg_consumption_kwh": _FLOOR_BASE_KW * 24,
+        "energy_deficit_kwh": 0.0,
+        "planned_grid_charge_kwh": 0.0,
+        "excluded_demand_claim_kwh": 0.0,
+    }
+    manager._build_chronological_plan(
+        now=datetime(2026, 9, 11, 1, 0, tzinfo=_FLOOR_TZ),
+        slots=slots,
+        decision_data=decision,
+        price_ceiling=None,
+    )
+    return decision
+
+
+def test_price_blocked_night_does_not_project_a_floor_charge():
+    assert not _price_blocked_floor_decision(0.25, discharge_price_threshold=0.27).get(
+        "floor_active"
+    )
+
+
+def test_price_block_falls_back_to_the_daily_average():
+    assert not _price_blocked_floor_decision(0.25, _dp_daily_avg_price=0.28).get(
+        "floor_active"
+    )
+
+
+def test_night_above_the_price_threshold_still_projects_the_drain():
+    assert _price_blocked_floor_decision(0.29, discharge_price_threshold=0.27)[
+        "floor_active"
+    ] is True
 
 
 def test_peak_shaving_release_inside_the_window_re_evaluates():
