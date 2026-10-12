@@ -1278,7 +1278,7 @@ class NonResponsiveBatteriesSensor(SensorEntity):
 _DAILY_OPERATION_INTERVAL_COUNT = 96
 _DAILY_OPERATION_INTERVAL_MINUTES = 15
 _DAILY_OPERATION_EXTENDED_INTERVAL_COUNT = 48
-_DAILY_OPERATION_EVENT_THROTTLE_S = 15.0
+_DAILY_OPERATION_EVENT_THROTTLE_S = 60.0
 _TIMELINE_MISSING = object()
 
 
@@ -2307,6 +2307,9 @@ class DailyOperationTimelineSensor(SensorEntity):
         ):
             return self._attributes_cache
         attributes = _daily_operation_timeline_attributes(self._controller)
+        # Building the snapshot can advance the clock and bump the revision;
+        # cache under the post-build value or the next read rebuilds again.
+        revision = _timeline_read(manager, "revision", _TIMELINE_MISSING)
         if revision is not _TIMELINE_MISSING:
             self._attributes_cache_revision = revision
             self._attributes_cache = attributes

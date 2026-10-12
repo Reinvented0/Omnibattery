@@ -1255,3 +1255,19 @@ def test_memoized_wall_grid_is_not_mutated_between_builds():
     assert second == first
     # A fall-back day still owns 25 physical hours after the second build.
     assert sum(second["duration_s"]) == 25 * 3600
+
+
+@pytest.mark.asyncio
+async def test_charge_delay_metadata_is_throttled_and_keeps_its_tail_keys():
+    clock = MutableClock(datetime(2026, 8, 23, 10, 7, tzinfo=MADRID))
+    manager = _manager(clock)
+    delay = {f"field_{index}": index for index in range(22)}
+    delay["weekly_full_charge_bypasses_delay"] = True
+
+    assert manager.update_runtime_metadata(delay=delay) is True
+    assert manager.last_notification_immediate is False
+    assert manager._delay_info["weekly_full_charge_bypasses_delay"] is True
+
+    manager.update_runtime_metadata(stale=True)
+    assert manager.last_notification_immediate is True
+    await manager.async_save_all()
