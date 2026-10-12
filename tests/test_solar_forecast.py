@@ -319,3 +319,44 @@ async def test_remaining_sensor_borrows_energy_dashboard_periods(monkeypatch):
     assert len(tasks) == 1  # fresh cache, no refetch
     assert [p.end - p.start for p in periods] == [timedelta(minutes=30)] * 3
     assert sum(p.energy_kwh for p in periods) == pytest.approx(6.0)
+
+
+@pytest.mark.asyncio
+async def test_energy_dashboard_forecasts_are_summed(monkeypatch):
+    """#558: one Forecast.Solar entry per array; the dashboard curve is their sum."""
+    import homeassistant.components.energy.data as energy_data
+    import custom_components.omnibattery.solar_forecast as module
+
+    curves = {
+        "east": {"2026-10-07T10:00:00+02:00": 1000, "2026-10-07T11:00:00+02:00": 500},
+        # Same instants, other offset form.
+        "west": {"2026-10-07T08:00:00+00:00": 300, "2026-10-07T09:00:00Z": 700},
+    }
+
+    class Platform:
+        @staticmethod
+        async def async_get_solar_forecast(hass, entry_id):
+            return {"wh_hours": curves[entry_id]}
+
+    async def platform(name):
+        return Platform
+
+    async def integration(hass, domain):
+        return SimpleNamespace(async_get_platform=platform)
+
+    async def manager(hass):
+        return SimpleNamespace(data={"energy_sources": [
+            {"type": "grid"},
+            {"type": "solar", "config_entry_solar_forecast": ["east"]},
+            {"type": "solar", "config_entry_solar_forecast": ["west", "east"]},
+        ]})
+
+    monkeypatch.setattr(energy_data, "async_get_manager", manager)
+    monkeypatch.setattr(module, "async_get_integration", integration)
+    hass = SimpleNamespace(config_entries=SimpleNamespace(
+        async_get_entry=lambda id: SimpleNamespace(domain="forecast_solar", entry_id=id)))
+
+    wh_hours = await module.async_fetch_energy_solar_forecast(hass, "sensor.template_sum")
+
+    # East counted once despite being listed twice; each instant merged.
+    assert sorted(wh_hours.values()) == [1200.0, 1300.0]

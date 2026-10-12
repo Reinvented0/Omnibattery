@@ -288,28 +288,68 @@ def _extract_forecast_periods(state: Any) -> tuple[SolarForecastPeriod, ...]:
     return tuple(parsed)
 
 
-async def async_fetch_energy_solar_forecast(hass: Any, sensor: str | None) -> dict:
-    """Return the Energy dashboard ``wh_hours`` of the integration behind ``sensor``.
-
-    Every integration HA offers as an Energy dashboard forecast (Solcast,
-    Forecast.Solar, Open-Meteo...) implements ``energy.async_get_solar_forecast``,
-    so the configured sensor alone identifies a multi-day curve. Anything else
-    yields ``{}``.
-    """
+async def _async_entry_wh_hours(hass: Any, entry_id: str) -> dict:
+    """Return the Energy platform ``wh_hours`` of one forecast config entry."""
     try:
-        entry = er.async_get(hass).async_get(sensor) if sensor else None
-        config_entry = (hass.config_entries.async_get_entry(entry.config_entry_id)
-                        if entry is not None and entry.config_entry_id else None)
+        config_entry = hass.config_entries.async_get_entry(entry_id)
         if config_entry is None:
             return {}
         integration = await async_get_integration(hass, config_entry.domain)
         platform = await integration.async_get_platform("energy")
-        data = await platform.async_get_solar_forecast(hass, config_entry.entry_id)
+        data = await platform.async_get_solar_forecast(hass, entry_id)
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("Energy dashboard solar forecast unavailable: %s", err)
         return {}
     wh_hours = data.get("wh_hours") if isinstance(data, dict) else None
     return wh_hours if isinstance(wh_hours, dict) else {}
+
+
+async def async_fetch_energy_solar_forecast(hass: Any, sensor: str | None) -> dict:
+    """Return the Energy dashboard ``wh_hours``, summed over its solar forecasts.
+
+    Every integration HA offers as an Energy dashboard forecast (Solcast,
+    Forecast.Solar, Open-Meteo...) implements ``energy.async_get_solar_forecast``.
+    A multi-array setup lists one forecast entry per array in the Energy
+    dashboard (#558), so they are summed as the dashboard does. Without any,
+    the integration behind the configured sensor is used. Anything else
+    yields ``{}``.
+    """
+    entry_ids: list[str] = []
+    try:
+        from homeassistant.components.energy.data import async_get_manager
+
+        prefs = (await async_get_manager(hass)).data or {}
+        entry_ids = list(dict.fromkeys(
+            entry_id
+            for source in prefs.get("energy_sources", ())
+            if source.get("type") == "solar"
+            for entry_id in source.get("config_entry_solar_forecast") or ()
+        ))
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Energy dashboard preferences unavailable: %s", err)
+    if not entry_ids:
+        try:
+            entry = er.async_get(hass).async_get(sensor) if sensor else None
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Energy dashboard solar forecast unavailable: %s", err)
+            entry = None
+        if entry is None or not entry.config_entry_id:
+            return {}
+        entry_ids = [entry.config_entry_id]
+
+    # Keyed by aware datetime: the same instant in different string forms
+    # (offsets, "Z") across providers is one period.
+    total: dict[datetime, float] = {}
+    for entry_id in entry_ids:
+        for timestamp, wh in (await _async_entry_wh_hours(hass, entry_id)).items():
+            start = _parse_period_timestamp(timestamp)
+            try:
+                wh = float(wh)
+            except (TypeError, ValueError):
+                continue
+            if start is not None:
+                total[start] = total.get(start, 0.0) + wh
+    return {start.isoformat(): wh for start, wh in total.items()}
 
 
 def periods_from_wh_hours(wh_hours: dict) -> tuple[SolarForecastPeriod, ...]:
