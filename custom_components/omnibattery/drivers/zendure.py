@@ -168,6 +168,11 @@ _DECIPERCENT_KEYS = frozenset({"soc_set", "min_soc"})
 # duration.
 _REMAIN_TIME_SENTINEL = 59940
 
+
+def _decikelvin_to_c(raw: float) -> float:
+    """zenSDK temperatures (hyperTmp, packData[].maxTemp) are deci-Kelvin (#566)."""
+    return round((raw - 2731) / 10, 1)
+
 # Per-pack telemetry from packData[] is exposed as `pack{N}_{suffix}` logical
 # keys (N is 1-based). They are not in SENSOR_DEFINITIONS — the platform builds
 # one ZendurePackSensor per (pack, spec) from PACK_FIELD_SPECS at setup, sized to
@@ -205,7 +210,7 @@ SENSOR_DEFINITIONS: list[dict] = [
      "device_class": "power",       "state_class": "measurement",       "scale": 1, "precision": 0,
      "scan_interval": "high",       "enabled_by_default": True},
     {"key": "internal_temperature", "name": "Internal Temperature",     "unit": "°C",
-     "device_class": "temperature", "state_class": "measurement",       "scale": 0.01, "precision": 2,
+     "device_class": "temperature", "state_class": "measurement",       "scale": 1, "precision": 1,
      "scan_interval": "low",        "enabled_by_default": True},
     {"key": "remain_discharge_time","name": "Remaining Discharge Time", "unit": "min",
      "device_class": "duration",    "state_class": "measurement",       "scale": 1, "precision": 0,
@@ -534,9 +539,13 @@ class ZendureLocalDriver(BatteryDriver):
             if snapshot.get(key) is not None:
                 snapshot[key] = snapshot[key] / 10
 
-        # hyperTmp (centi-°C) and BatVolt (centi-volt) are returned raw; the
-        # coordinator applies the ×0.01 scale from the entity definition, the
-        # same path Marstek register sensors use. Scaling here would double it.
+        # hyperTmp is deci-Kelvin (zenSDK); the offset can't ride the entity
+        # scale, so convert here (entity scale is 1).
+        if snapshot.get("internal_temperature") is not None:
+            snapshot["internal_temperature"] = _decikelvin_to_c(snapshot["internal_temperature"])
+
+        # BatVolt (centi-volt) is returned raw; the coordinator applies the
+        # ×0.01 scale from the entity definition. Scaling here would double it.
 
         # remainOutTime reports a 999 h sentinel when idle / not discharging;
         # surface as unknown (None) rather than a bogus ~41-day duration.
@@ -569,7 +578,7 @@ class ZendureLocalDriver(BatteryDriver):
             if pack.get("minVol") is not None:
                 snapshot[prefix + "min_cell_voltage"] = round(pack["minVol"] / 100, 3)
             if pack.get("maxTemp") is not None:
-                snapshot[prefix + "temperature"] = round(pack["maxTemp"] / 100, 2)
+                snapshot[prefix + "temperature"] = _decikelvin_to_c(pack["maxTemp"])
             if pack.get("power") is not None:
                 snapshot[prefix + "power"] = pack["power"]
             if pack.get("sn") is not None:
