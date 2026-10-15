@@ -109,6 +109,7 @@ def _controller():
         _last_commanded_net_sign={},
         _charge_engage_started={},
         _discharge_engage_started={},
+        _engage_confirmed_at={},
         _high_soc_taper_started={},
         _idle_commanded_started={},
         _non_responsive=SimpleNamespace(
@@ -537,6 +538,10 @@ async def test_new_charge_session_gets_a_fresh_taper_grace():
     # setpoint forces a real write (an unchanged one is skipped unjudged), and
     # a zeroed write counter makes it a readback write.
     ctrl._charge_engage_started[coord] = dt_util.utcnow() - timedelta(
+        seconds=DISCHARGE_ENGAGE_GRACE_S + 1
+    )
+    # The grace is measured from the confirmed mode switch, so age that too.
+    ctrl._engage_confirmed_at[coord] = dt_util.utcnow() - timedelta(
         seconds=DISCHARGE_ENGAGE_GRACE_S + 1
     )
     coord._pd_write_count = 0
@@ -1067,3 +1072,63 @@ async def test_missing_ac_key_keeps_cell_only_judgement():
 
     assert result is True
     record.assert_called_once()
+
+
+async def test_charge_grace_runs_from_late_mode_confirm():
+    """A bridge that applies the force-mode change late (ESPHome/LilyGo) must not
+    have the engage grace expire before the battery was even switched to charge:
+    the grace runs from the first confirmed-mode judgment, not from the command."""
+    coord = _Coord({
+        "force_mode": 1,
+        "set_charge_power": 2500,
+        "set_discharge_power": 0,
+        "battery_power": 0,
+        "battery_soc": 18,
+        "inverter_state": 1,
+    })
+    ctrl = _controller()
+    record = MagicMock(return_value=None)
+    ctrl._non_responsive.record_non_delivery = record
+    # Charge was commanded 70 s ago, but the mode only now reads back as charge.
+    ctrl._charge_engage_started[coord] = dt_util.utcnow() - timedelta(seconds=70)
+
+    await ctrl._check_non_delivery(coord, 2500, 0, attempt=0, direction="charge")
+
+    record.assert_not_called()  # fresh mode confirm: still within engage grace
+    assert coord in ctrl._engage_confirmed_at
+
+
+async def test_charge_grace_expires_after_mode_confirm():
+    """Once the grace has also run out since the confirmed mode switch, a battery
+    still delivering 0 W is judged as before."""
+    coord = _Coord({
+        "force_mode": 1,
+        "set_charge_power": 2500,
+        "set_discharge_power": 0,
+        "battery_power": 0,
+        "battery_soc": 18,
+        "inverter_state": 1,
+    })
+    ctrl = _controller()
+    record = MagicMock(return_value=None)
+    ctrl._non_responsive.record_non_delivery = record
+    now = dt_util.utcnow()
+    ctrl._charge_engage_started[coord] = now - timedelta(seconds=200)
+    ctrl._engage_confirmed_at[coord] = now - timedelta(seconds=120)
+
+    await ctrl._check_non_delivery(coord, 2500, 0, attempt=0, direction="charge")
+
+    record.assert_called_once()
+
+
+async def test_new_charge_episode_resets_mode_confirm():
+    """A fresh direction flip must forget the previous episode's confirm time."""
+    coord = _Coord({"force_mode": 0, "set_charge_power": 0, "set_discharge_power": 0})
+    coord.apply_power = AsyncMock(return_value=_ok(2500))
+    ctrl = _controller()
+    ctrl._last_commanded_net_sign[coord] = 0
+    ctrl._engage_confirmed_at[coord] = dt_util.utcnow() - timedelta(hours=1)
+
+    await ChargeDischargeController._set_battery_power(ctrl, coord, 2500, 0)
+
+    assert coord not in ctrl._engage_confirmed_at

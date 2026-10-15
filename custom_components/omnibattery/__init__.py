@@ -895,6 +895,12 @@ class ChargeDischargeController:
         self._last_commanded_net_sign: dict[MarstekVenusDataUpdateCoordinator, int] = {}
         self._charge_engage_started: dict[MarstekVenusDataUpdateCoordinator, datetime] = {}
         self._discharge_engage_started: dict[MarstekVenusDataUpdateCoordinator, datetime] = {}
+        # The time the battery's force mode was first seen matching the commanded
+        # direction within the current engage episode. On a bridge that applies
+        # the force-mode change late (ESPHome/LilyGo: tens of seconds observed),
+        # the engage grace must run from here, not from the command — otherwise
+        # it can expire before the battery has even been told to move.
+        self._engage_confirmed_at: dict[MarstekVenusDataUpdateCoordinator, datetime] = {}
         # Top-of-charge taper grace: the time a battery was first seen charging
         # at SOC >= HIGH_SOC_CHARGE_TAPER_FLOOR without clearing the 10%-of-
         # commanded delivery bar. See _check_non_delivery.
@@ -2494,6 +2500,7 @@ class ChargeDischargeController:
             "_last_commanded_net_sign",
             "_charge_engage_started",
             "_discharge_engage_started",
+            "_engage_confirmed_at",
             "_high_soc_taper_started",
             "_idle_commanded_started",
             "_idle_runaway_handled",
@@ -6858,6 +6865,9 @@ class ChargeDischargeController:
             and self._last_commanded_net_sign.get(coordinator) != 1
         ):
             self._charge_engage_started[coordinator] = dt_util.utcnow()
+            _engage_confirmed = getattr(self, "_engage_confirmed_at", None)
+            if _engage_confirmed is not None:
+                _engage_confirmed.pop(coordinator, None)
             # A stale taper timestamp from a prior charge session must not
             # survive into this one: a battery that tapered near 100% SOC,
             # then idled/discharged for a while (still reporting SOC >= the
@@ -6872,6 +6882,9 @@ class ChargeDischargeController:
             and self._last_commanded_net_sign.get(coordinator) != -1
         ):
             self._discharge_engage_started[coordinator] = dt_util.utcnow()
+            _engage_confirmed = getattr(self, "_engage_confirmed_at", None)
+            if _engage_confirmed is not None:
+                _engage_confirmed.pop(coordinator, None)
             self._non_responsive.clear(coordinator, delivering=False)
         # Mirror stamp for the opposite transition: a flip from a move into idle
         # starts the ramp-down grace for the idle-runaway judgment below. A
@@ -7209,6 +7222,23 @@ class ChargeDischargeController:
         re-commanded forever.
         """
         is_charge = direction == "charge"
+        engage_times = (
+            self._charge_engage_started
+            if is_charge
+            else self._discharge_engage_started
+        )
+        engage_started = engage_times.get(coordinator)
+        # Every caller reaches this only once the battery's force mode already
+        # matches the commanded direction (confirmed readback, or a skip-write
+        # whose polled set-points match). The first such call in an engage
+        # episode is therefore when the battery actually received the move;
+        # remember it so the grace below is measured from there.
+        engage_confirmed = getattr(self, "_engage_confirmed_at", None)
+        mode_confirmed_at = None
+        if engage_started is not None and engage_confirmed is not None:
+            mode_confirmed_at = engage_confirmed.setdefault(
+                coordinator, dt_util.utcnow()
+            )
         delivered_power = _delivered_toward(
             coordinator.data or {}, actual_power, is_charge=is_charge
         )
@@ -7216,12 +7246,12 @@ class ChargeDischargeController:
             self._high_soc_taper_started.pop(coordinator, None)
             self._non_responsive.clear(coordinator)
             return
-        engage_times = (
-            self._charge_engage_started
-            if is_charge
-            else self._discharge_engage_started
-        )
-        engage_started = engage_times.get(coordinator)
+        if (
+            engage_started is not None
+            and mode_confirmed_at is not None
+            and mode_confirmed_at > engage_started
+        ):
+            engage_started = mode_confirmed_at
         engage_grace_s = getattr(coordinator.capabilities, "engage_grace_s", None)
         if engage_grace_s is None:
             engage_grace_s = DISCHARGE_ENGAGE_GRACE_S
